@@ -63,7 +63,7 @@ const commands = [
     .setName('findfile')
     .setDescription('Search file/folder names in a GitHub repo (like a search bar for the repo tree).')
     .addStringOption((opt) =>
-      opt.setName('query').setDescription('Text to search for in file/folder paths').setRequired(true)
+      opt.setName('query').setDescription('Text to search for in file/folder paths').setRequired(true).setAutocomplete(true)
     )
     .addStringOption((opt) =>
       opt
@@ -86,6 +86,28 @@ const commands = [
         .setRequired(true)
     )
     .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('listrepos')
+    .setDescription('List repos owned by a user/org (or your own account if left blank).')
+    .addStringOption((opt) =>
+      opt
+        .setName('owner')
+        .setDescription('GitHub username or org (leave blank to list your own token\'s account repos)')
+        .setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('searchrepo')
+    .setDescription('Search GitHub for repos by name/keyword across all of GitHub.')
+    .addStringOption((opt) =>
+      opt.setName('query').setDescription('Repo name or keyword to search for').setRequired(true).setAutocomplete(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName('owner').setDescription('Optional: restrict results to this user/org').setRequired(false)
+    )
+    .toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -99,6 +121,10 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     console.log(`Registering ${commands.length} commands ${process.env.DISCORD_GUILD_ID ? '(guild-scoped, instant)' : '(global, may take up to 1hr)'}...`);
     await rest.put(route, { body: commands });
     console.log('Done.');
+  } catch (err) {
+    console.error(err);
+  }
+})();    console.log('Done.');
   } catch (err) {
     console.error(err);
   }
