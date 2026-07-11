@@ -1,0 +1,16 @@
+{
+  "name": "Kayii",
+  "version": "1.0.0",
+  "description": "Discord bot that creates/overwrites files (including in nested folders) in a GitHub repo",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "deploy-commands": "node deploy-commands.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "@octokit/rest": "^20.1.1",
+    "dotenv": "^16.4.5"
+  }
+}
