@@ -185,12 +185,63 @@ async function searchFiles({ repoFull, query, branch }) {
   return { matches, truncated: Boolean(treeRes.data.truncated), owner, repo, branch: targetBranch };
 }
 
+/**
+ * Lists repos owned by a given user/org (or, if omitted, every repo the
+ * GITHUB_TOKEN's own account can see — including private ones it has access to).
+ */
+async function listRepos({ owner } = {}) {
+  let repos;
+  if (owner && owner.trim()) {
+    // A specific user/org was named — list their public repos (works for anyone, no auth needed).
+    const res = await octokit.repos.listForUser({ username: owner.trim(), per_page: 100, sort: 'updated' });
+    repos = res.data;
+  } else {
+    // No owner given — list repos the token's own account can see, private + public.
+    const res = await octokit.repos.listForAuthenticatedUser({ per_page: 100, sort: 'updated' });
+    repos = res.data;
+  }
+
+  return repos.map((r) => ({
+    fullName: r.full_name,
+    private: r.private,
+    description: r.description,
+    defaultBranch: r.default_branch,
+    updatedAt: r.updated_at,
+  }));
+}
+
+/**
+ * Searches GitHub for repos by name/keyword using the code-search-adjacent
+ * repo search API. This searches across ALL of GitHub (public repos), not
+ * just one account — good for "is there a repo called X" style lookups.
+ * Optionally scope to one owner with owner:<name>.
+ */
+async function searchRepos({ query, owner }) {
+  if (!query || !query.trim()) throw new Error('Search query cannot be empty.');
+
+  let q = query.trim();
+  if (owner && owner.trim()) q += ` user:${owner.trim()}`;
+
+  const res = await octokit.search.repos({ q, per_page: 25, sort: 'updated' });
+
+  return res.data.items.map((r) => ({
+    fullName: r.full_name,
+    private: r.private,
+    description: r.description,
+    defaultBranch: r.default_branch,
+    updatedAt: r.updated_at,
+    stars: r.stargazers_count,
+  }));
+}
+
 module.exports = {
   createOrOverwriteFile,
   normalizePath,
   resolveRepo,
   listDirectory,
   searchFiles,
+  listRepos,
+  searchRepos,
   getActiveRepo,
   setActiveRepo,
   DEFAULT_BRANCH,
