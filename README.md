@@ -7,12 +7,13 @@ no separate "make folder" step needed.
 
 ## Commands
 
-### Write (locked to the repo in `.env`, and to `ALLOWED_USER_IDS`)
+### Write (locked to the current active repo, and to `ALLOWED_USER_IDS`)
 
 - `/pushfile path:<repo/path/to/file.ext> file:<attachment>` — uploads a Discord attachment straight to the repo.
 - `/pushtext path:<repo/path/to/file.ext> content:<paste>` — writes pasted text/code directly.
+- `/setrepo repo:<owner/repo>` — switches which repo `pushfile`/`pushtext` target, **instantly, with no restart needed**. This choice is saved to `active-repo.json` next to the bot's code, so it's remembered even across restarts. `GITHUB_OWNER`/`GITHUB_REPO` in `.env` are only used the very first time the bot ever runs (before `active-repo.json` exists) — after that, `/setrepo` is the source of truth.
 
-Both accept optional `message:` (commit message) and `branch:` (defaults to your configured default branch).
+Both `pushfile`/`pushtext` accept optional `message:` (commit message) and `branch:` (defaults to your configured default branch).
 Both **overwrite** the target file if it already exists (using its current SHA), or **create** it if it doesn't.
 
 ### Read-only browsing (works on *any* repo, not just the configured one)
