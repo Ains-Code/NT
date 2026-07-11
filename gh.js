@@ -1,10 +1,44 @@
 const { Octokit } = require('@octokit/rest');
+const fs = require('fs');
+const path = require('path');
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-const OWNER = process.env.GITHUB_OWNER;
-const REPO = process.env.GITHUB_REPO;
 const DEFAULT_BRANCH = process.env.GITHUB_DEFAULT_BRANCH || 'main';
+
+// Where the currently-active repo choice is persisted, so it survives bot restarts
+// without needing to touch .env. Falls back to GITHUB_OWNER/GITHUB_REPO from .env
+// the very first time the bot ever runs (or if this file gets deleted).
+const STATE_FILE = path.join(__dirname, 'active-repo.json');
+
+function loadActiveRepo() {
+  try {
+    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed.owner && parsed.repo) return parsed;
+  } catch {
+    // no state file yet, or it's corrupt — fall back to .env defaults below
+  }
+  return { owner: process.env.GITHUB_OWNER, repo: process.env.GITHUB_REPO };
+}
+
+let activeRepo = loadActiveRepo();
+
+/** Returns the repo that pushfile/pushtext currently target. */
+function getActiveRepo() {
+  return { ...activeRepo };
+}
+
+/**
+ * Switches the repo that pushfile/pushtext target, and persists it to disk so
+ * it's remembered across bot restarts — no .env edit or restart required.
+ */
+function setActiveRepo(owner, repo) {
+  if (!owner || !repo) throw new Error('Both owner and repo are required.');
+  activeRepo = { owner, repo };
+  fs.writeFileSync(STATE_FILE, JSON.stringify(activeRepo, null, 2), 'utf8');
+  return getActiveRepo();
+}
 
 /**
  * Normalizes a user-supplied path: strips leading slashes, backslashes -> slashes,
@@ -28,10 +62,11 @@ function normalizePath(rawPath) {
  * Returns null if the file does not exist yet (so we create it fresh).
  */
 async function getExistingFileSha(path, branch) {
+  const { owner, repo } = getActiveRepo();
   try {
     const res = await octokit.repos.getContent({
-      owner: OWNER,
-      repo: REPO,
+      owner,
+      repo,
       path,
       ref: branch,
     });
@@ -52,12 +87,13 @@ async function getExistingFileSha(path, branch) {
 async function createOrOverwriteFile({ path, contentBuffer, message, branch }) {
   const cleanPath = normalizePath(path);
   const targetBranch = branch || DEFAULT_BRANCH;
+  const { owner, repo } = getActiveRepo();
 
   const existingSha = await getExistingFileSha(cleanPath, targetBranch);
 
   const res = await octokit.repos.createOrUpdateFileContents({
-    owner: OWNER,
-    repo: REPO,
+    owner,
+    repo,
     path: cleanPath,
     message: message || (existingSha ? `Update ${cleanPath}` : `Add ${cleanPath}`),
     content: contentBuffer.toString('base64'),
@@ -80,7 +116,7 @@ async function createOrOverwriteFile({ path, contentBuffer, message, branch }) {
  */
 function resolveRepo(repoFull) {
   if (!repoFull || !repoFull.trim()) {
-    return { owner: OWNER, repo: REPO };
+    return getActiveRepo();
   }
   const parts = repoFull.trim().replace(/^\/+|\/+$/g, '').split('/');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -155,7 +191,7 @@ module.exports = {
   resolveRepo,
   listDirectory,
   searchFiles,
-  OWNER,
-  REPO,
+  getActiveRepo,
+  setActiveRepo,
   DEFAULT_BRANCH,
 };
