@@ -75,6 +75,17 @@ const commands = [
       opt.setName('branch').setDescription('Branch or tag (defaults to the repo default branch)').setRequired(false)
     )
     .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('setrepo')
+    .setDescription('Switch which GitHub repo pushfile/pushtext target — no restart needed.')
+    .addStringOption((opt) =>
+      opt
+        .setName('repo')
+        .setDescription('owner/repo, e.g. jayjay/mod-mindustry')
+        .setRequired(true)
+    )
+    .toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
