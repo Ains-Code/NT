@@ -124,6 +124,32 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   } catch (err) {
     console.error(err);
   }
+})();  new SlashCommandBuilder()
+    .setName('searchrepo')
+    .setDescription('Search GitHub for repos by name/keyword across all of GitHub.')
+    .addStringOption((opt) =>
+      opt.setName('query').setDescription('Repo name or keyword to search for').setRequired(true).setAutocomplete(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName('owner').setDescription('Optional: restrict results to this user/org').setRequired(false)
+    )
+    .toJSON(),
+];
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+(async () => {
+  try {
+    const route = process.env.DISCORD_GUILD_ID
+      ? Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID)
+      : Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
+
+    console.log(`Registering ${commands.length} commands ${process.env.DISCORD_GUILD_ID ? '(guild-scoped, instant)' : '(global, may take up to 1hr)'}...`);
+    await rest.put(route, { body: commands });
+    console.log('Done.');
+  } catch (err) {
+    console.error(err);
+  }
 })();    console.log('Done.');
   } catch (err) {
     console.error(err);
