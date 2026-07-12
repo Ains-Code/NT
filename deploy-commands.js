@@ -7,20 +7,26 @@ const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 // Leave both blank to use whatever repo is currently active (see /setrepo).
 // You can also just type "owner/repo" directly into repo: — owner: is then ignored.
 function addOwnerRepoOptions(builder, { repoRequired = false } = {}) {
-  return builder
-    .addStringOption((opt) =>
-      opt
-        .setName('owner')
-        .setDescription('GitHub username or org (optional — narrows the repo: suggestions)')
-        .setRequired(false)
-    )
-    .addStringOption((opt) =>
-      opt
-        .setName('repo')
-        .setDescription('Repo name, or "owner/repo" (leave blank to use the current active repo)')
-        .setRequired(repoRequired)
-        .setAutocomplete(true)
-    );
+  const repoOption = (opt) =>
+    opt
+      .setName('repo')
+      .setDescription('Repo name, or "owner/repo" (leave blank to use the current active repo)')
+      .setRequired(repoRequired)
+      .setAutocomplete(true);
+
+  const ownerOption = (opt) =>
+    opt
+      .setName('owner')
+      .setDescription('GitHub username or org (optional — narrows the repo: suggestions)')
+      .setRequired(false);
+
+  // Discord requires all required options to come before optional ones in the
+  // final options array. When repo: is required (setrepo), it must be added
+  // before the optional owner: option; otherwise owner: (optional) can go first.
+  if (repoRequired) {
+    return builder.addStringOption(repoOption).addStringOption(ownerOption);
+  }
+  return builder.addStringOption(ownerOption).addStringOption(repoOption);
 }
 
 const commands = [
@@ -99,6 +105,44 @@ const commands = [
     { repoRequired: true }
   ).toJSON(),
 
+  new SlashCommandBuilder()
+    .setName('listrepos')
+    .setDescription('List repos owned by a user/org (or your own account if left blank).')
+    .addStringOption((opt) =>
+      opt
+        .setName('owner')
+        .setDescription("GitHub username or org (leave blank to list your own token's account repos)")
+        .setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('searchrepo')
+    .setDescription('Search GitHub for repos by name/keyword across all of GitHub.')
+    .addStringOption((opt) =>
+      opt.setName('query').setDescription('Repo name or keyword to search for').setRequired(true).setAutocomplete(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName('owner').setDescription('Optional: restrict results to this user/org').setRequired(false)
+    )
+    .toJSON(),
+];
+
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+(async () => {
+  try {
+    const route = process.env.DISCORD_GUILD_ID
+      ? Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID)
+      : Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
+
+    console.log(`Registering ${commands.length} commands ${process.env.DISCORD_GUILD_ID ? '(guild-scoped, instant)' : '(global, may take up to 1hr)'}...`);
+    await rest.put(route, { body: commands });
+    console.log('Done.');
+  } catch (err) {
+    console.error(err);
+  }
+})();
   new SlashCommandBuilder()
     .setName('listrepos')
     .setDescription('List repos owned by a user/org (or your own account if left blank).')
