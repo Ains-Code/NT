@@ -1,57 +1,52 @@
 # Discord → GitHub File Writer Bot
 
-A Discord bot with two slash commands that create **or overwrite** files in a GitHub repo,
-including files nested in folders that don't exist yet — GitHub's Contents API creates
-the folder path implicitly from the file path, so `mods/conveyor/Conveyor.java` just works,
-no separate "make folder" step needed.
+A Discord bot that creates **or overwrites** files in GitHub repos — including files nested in
+folders that don't exist yet — and can also browse, search, and switch between repos, all
+without ever leaving Discord.
+
+## The owner:/repo: pattern (every command)
+
+Every command shares the same two optional options:
+
+- `owner:` — a GitHub username or org (e.g. `jayjay`)
+- `repo:` — a repo name (autocompletes live as you type, showing repos under `owner:`), or a
+  combined `owner/repo` string (in which case `owner:` is ignored)
+
+Leave both blank and the command uses whatever repo is currently **active** — see `/setrepo`
+below. This means `/pushfile`, `/pushtext`, `/browse`, and `/findfile` can all target a repo
+other than the active one for a single call, without switching the active repo.
 
 ## Commands
 
-### Write (locked to the current active repo, and to `ALLOWED_USER_IDS`)
+- `/pushfile owner: repo: path: file:` — uploads a Discord attachment to a repo. Creates the
+  file if it doesn't exist, or **overwrites** it if it does. `path:` shows live suggestions of
+  existing files/folders as you type, handy for picking exactly what to overwrite.
+- `/pushtext owner: repo: path: content:` — same, but for pasted text/code instead of an
+  attachment. `path:` also autocompletes.
+- `/setrepo owner: repo:` — switches which repo `pushfile`/`pushtext` target **by default**
+  when no `owner:`/`repo:` is given on that call. Takes effect instantly, no restart needed,
+  and is remembered even across bot restarts (saved to `active-repo.json` next to the code).
+- `/browse owner: repo: path: branch:` — lists files and folders at a path in any repo.
+  `path:` autocompletes with matching files/folders too. Read-only.
+- `/findfile owner: repo: query: branch:` — searches every file **and folder** path in a repo
+  for a substring match. Live suggestions appear as you type `query:`. Read-only.
+- `/listrepos owner:` — lists every repo under a user/org (or your own token's account if
+  `owner:` is left blank, including private repos it can see). Read-only.
+- `/searchrepo query: owner:` — searches **all of GitHub** for repos by name/keyword, with live
+  suggestions as you type. Read-only.
 
-- `/pushfile path:<repo/path/to/file.ext> file:<attachment>` — uploads a Discord attachment straight to the repo.
-- `/pushtext path:<repo/path/to/file.ext> content:<paste>` — writes pasted text/code directly.
-- `/setrepo repo:<owner/repo>` — switches which repo `pushfile`/`pushtext` target, **instantly, with no restart needed**. This choice is saved to `active-repo.json` next to the bot's code, so it's remembered even across restarts. `GITHUB_OWNER`/`GITHUB_REPO` in `.env` are only used the very first time the bot ever runs (before `active-repo.json` exists) — after that, `/setrepo` is the source of truth.
+Both `pushfile`/`pushtext` accept optional `message:` (commit message) and `branch:` (defaults
+to the target repo's default branch).
 
-Both `pushfile`/`pushtext` accept optional `message:` (commit message) and `branch:` (defaults to your configured default branch).
-Both **overwrite** the target file if it already exists (using its current SHA), or **create** it if it doesn't.
+## Permissions
 
-### Read-only browsing (works on *any* repo, not just the configured one)
+Only `pushfile`, `pushtext`, and `setrepo` are gated by `ALLOWED_USER_IDS` in `.env`, since
+those are the only commands that change something. `browse`, `findfile`, `listrepos`, and
+`searchrepo` are read-only and open to anyone who can use slash commands in the server.
 
-- `/browse repo:<owner/repo optional> path:<optional> branch:<optional>` — lists the files and
-  folders directly inside a directory. Omit `repo` to browse the configured repo; pass e.g.
-  `Anuken/Mindustry` to browse a different one.
-- `/findfile query:<text> repo:<owner/repo optional> branch:<optional>` — a "search bar" for the
-  repo: matches your query as a substring against every file **and folder** path in the repo
-  (via the git trees API), so you can find things without knowing the exact directory structure.
-
-These two commands are open to anyone who can use slash commands in the server, since they
-can't modify anything — only `pushfile`/`pushtext` are gated by `ALLOWED_USER_IDS`.
-
-**Note on private repos:** `/browse` and `/findfile` use the same `GITHUB_TOKEN` as the write
-commands. Public repos are readable regardless of the token's scope; to browse a *private*
-repo other than the configured one, the token needs read access to it too.
-
-### Log channel + self-cleaning replies
-
-Every command's reply in the channel where it was run **auto-deletes itself** after
-`REPLY_AUTO_DELETE_SECONDS` (default 5 seconds, set to `0` to disable). This keeps the
-command channel tidy instead of filling up with bot output.
-
-Meanwhile, a **permanent** record of every push is posted to the channel set in
-`LOG_CHANNEL_ID`, in the format:
-
-```
-✅ Overwrite was successful 'mods/conveyor/Conveyor.java' — by @jayjay — https://github.com/.../commit/...
-✅ Create was successful 'mods/conveyor/README.md' — by @jayjay — https://github.com/.../commit/...
-❌ Push failed for command /pushfile by @jayjay: <error message>
-```
-
-To set it up:
-1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode).
-2. Right-click the channel you want as your log channel → **Copy Channel ID** → paste into
-   `LOG_CHANNEL_ID` in `.env`.
-3. Make sure the bot has **View Channel** and **Send Messages** permission in that channel.
+**Note on private repos:** all commands use the same `GITHUB_TOKEN`. Public repos are readable
+regardless of the token's scope; a private repo needs the token to actually have read (or
+read+write, for pushes) access to it.
 
 ## Setup
 
@@ -69,35 +64,49 @@ To set it up:
 
 3. **Create a GitHub token**
    - GitHub → Settings → Developer settings → Fine-grained personal access tokens
-   - Restrict it to **only** the target repo, with **Contents: Read and write** permission.
+   - Restrict it to the repo(s) you want writable, with **Contents: Read and write** permission.
    - Copy it into `GITHUB_TOKEN`.
 
 4. **Copy `.env.example` to `.env`** and fill in all values, including:
-   - `GITHUB_OWNER` / `GITHUB_REPO` — the repo the bot is allowed to write to.
-   - `ALLOWED_USER_IDS` — comma-separated Discord user IDs allowed to run the write commands.
-     Leave blank only if you fully trust everyone in the server (not recommended).
+   - `GITHUB_OWNER` / `GITHUB_REPO` — the repo used as the very first active repo (before
+     `/setrepo` has ever been used).
+   - `ALLOWED_USER_IDS` — comma-separated Discord user IDs allowed to run write commands.
 
 5. **Register the slash commands**
    ```bash
    npm run deploy-commands
    ```
-   Set `DISCORD_GUILD_ID` in `.env` while testing — guild-scoped commands update instantly,
-   global commands can take up to an hour to propagate.
+   Re-run this any time the command definitions change (e.g. after this update). Set
+   `DISCORD_GUILD_ID` in `.env` while testing — guild-scoped commands update instantly, global
+   commands can take up to an hour to propagate.
 
 6. **Run the bot**
    ```bash
    npm start
    ```
 
+## Log channel + self-cleaning replies
+
+Every command's reply in the channel where it was run auto-deletes itself after
+`REPLY_AUTO_DELETE_SECONDS` (default 5 seconds, set to `0` to disable). A **permanent** record of
+every push and repo switch is posted to `LOG_CHANNEL_ID` instead, e.g.:
+
+```
+✅ Overwrite was successful 'mods/conveyor/Conveyor.java' in 'jayjay/mod-mindustry' — by @jayjay — https://github.com/.../commit/...
+🔀 Target repo switched to 'jayjay/Nyakk' by @jayjay
+❌ Push failed for command /pushfile by @jayjay: Not Found
+```
+
 ## Security notes
 
-- The bot only writes to the single repo configured in `.env` — it can't be pointed at
-  an arbitrary repo from within Discord, which limits the blast radius of a compromised token.
-- Keep `ALLOWED_USER_IDS` set. Anyone on that list can overwrite any file in the repo.
-- The GitHub token should be **fine-grained** and scoped to just this repo, not a classic
-  token with access to everything you own.
-- File size is capped at 5 MB and pasted text at 200,000 characters — adjust `MAX_FILE_BYTES`
-  / `MAX_TEXT_CHARS` in `index.js` if you need different limits.
+- The bot only writes to whatever repo is currently active, or one explicitly named via
+  `owner:`/`repo:` on the call itself — it can't be pointed anywhere your `GITHUB_TOKEN` doesn't
+  already have access to.
+- Keep `ALLOWED_USER_IDS` set. Anyone on that list can overwrite any file in any repo the token
+  can write to, and can change the active repo.
+- File size is capped at 5 MB and pasted text at 200,000 characters — adjust `MAX_FILE_BYTES` /
+  `MAX_TEXT_CHARS` in `index.js` if you need different limits.
+- Path traversal segments (`.` / `..`) are rejected in `github.js`.  / `MAX_TEXT_CHARS` in `index.js` if you need different limits.
 - Path traversal segments (`.` / `..`) are rejected in `github.js`.
 - Consider adding a confirmation step (e.g. a button) before overwriting files in production
   branches if you want extra protection against accidental overwrites.
