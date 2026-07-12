@@ -63,13 +63,6 @@ function isAllowed(userId) {
 // this bot's control.)
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB — GitHub's hard limit
 
-// There is no MAX_TEXT_CHARS for pushtext's `content:` option anymore — the
-// old 200,000-char app-level cap was dead code anyway, since Discord itself
-// hard-limits a slash command STRING option to 6,000 characters before it
-// ever reaches this bot. That 6,000-char ceiling is a Discord platform limit
-// and can't be raised from here. For anything longer, use /pushfile instead
-// (attach a .txt/.md/etc. file) — it now goes all the way up to GitHub's
-// 100 MB limit above.
 const DISCORD_MSG_LIMIT = 2000; // Discord's hard limit on a single message's content
 
 /**
@@ -140,7 +133,7 @@ client.on('interactionCreate', async (interaction) => {
       const typed = focused.value || '';
       const commandName = interaction.commandName;
 
-      // repo: autocomplete — shared by pushfile, pushtext, browse, findfile, setrepo.
+      // repo: autocomplete — shared by pushfile, browse, findfile, setrepo.
       if (focused.name === 'repo') {
         const owner = interaction.options.getString('owner') || undefined;
         const suggestions = await suggestRepoNames({ owner, typed });
@@ -152,7 +145,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // path: autocomplete — shared by pushfile, pushtext, browse. Shows existing
+      // path: autocomplete — shared by pushfile, browse. Shows existing
       // files/folders in the target repo that match what's typed so far, so you
       // can browse into the right spot (or reuse an existing file to overwrite it)
       // without knowing the exact path by heart.
@@ -218,12 +211,12 @@ client.on('interactionCreate', async (interaction) => {
 
   if (!interaction.isChatInputCommand()) return;
   const commandName = interaction.commandName;
-  if (!['pushfile', 'pushtext', 'browse', 'findfile', 'setrepo', 'listrepos', 'searchrepo'].includes(commandName)) return;
+  if (!['pushfile', 'browse', 'findfile', 'setrepo', 'listrepos', 'searchrepo'].includes(commandName)) return;
 
   // Only the write commands (including setrepo, since it changes where writes go)
   // require the allowlist — browse/findfile/listrepos/searchrepo are read-only
   // and safe to expose more broadly, since they can't change anything in the repo.
-  const isWriteCommand = ['pushfile', 'pushtext', 'setrepo'].includes(commandName);
+  const isWriteCommand = ['pushfile', 'setrepo'].includes(commandName);
   if (isWriteCommand && !isAllowed(interaction.user.id)) {
     await interaction.reply({
       content: '⛔ You are not authorized to write to the connected GitHub repo.',
@@ -365,7 +358,7 @@ client.on('interactionCreate', async (interaction) => {
       const updated = setActiveRepo(finalOwner, finalRepo);
       await interaction.editReply(
         `✅ Target repo switched to **${updated.owner}/${updated.repo}**\n` +
-          `\`/pushfile\` and \`/pushtext\` will write here from now on — no restart needed, and this is remembered even if the bot restarts.`
+          `\`/pushfile\` will write here from now on — no restart needed, and this is remembered even if the bot restarts.`
       );
       await logToChannel(`🔀 Target repo switched to '${updated.owner}/${updated.repo}' by <@${interaction.user.id}>`);
     } catch (err) {
@@ -376,38 +369,27 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // pushfile / pushtext
+  // pushfile
   try {
     const { owner, repo } = getOwnerRepoOptions(interaction);
     const path = interaction.options.getString('path', true);
     const message = interaction.options.getString('message') || undefined;
     const branch = interaction.options.getString('branch') || undefined;
 
-    let contentBuffer;
+    const attachment = interaction.options.getAttachment('file', true);
 
-    if (interaction.commandName === 'pushfile') {
-      const attachment = interaction.options.getAttachment('file', true);
-
-      if (attachment.size > MAX_FILE_BYTES) {
-        await interaction.editReply(
-          `❌ File is too large (${attachment.size} bytes). Limit is ${MAX_FILE_BYTES} bytes (100 MB) — this is GitHub's own hard cap, not something this bot can raise further.`
-        );
-        scheduleAutoDelete(interaction);
-        return;
-      }
-
-      const res = await fetch(attachment.url);
-      if (!res.ok) throw new Error(`Failed to download attachment (HTTP ${res.status})`);
-      const arrayBuffer = await res.arrayBuffer();
-      contentBuffer = Buffer.from(arrayBuffer);
-    } else {
-      // No app-level length check needed here: Discord itself caps a STRING
-      // option at 6,000 characters before the bot ever sees it. If you need
-      // more than that, use /pushfile with a text file attached instead —
-      // that path supports content up to GitHub's 100 MB limit.
-      const text = interaction.options.getString('content', true);
-      contentBuffer = Buffer.from(text, 'utf8');
+    if (attachment.size > MAX_FILE_BYTES) {
+      await interaction.editReply(
+        `❌ File is too large (${attachment.size} bytes). Limit is ${MAX_FILE_BYTES} bytes (100 MB) — this is GitHub's own hard cap, not something this bot can raise further.`
+      );
+      scheduleAutoDelete(interaction);
+      return;
     }
+
+    const res = await fetch(attachment.url);
+    if (!res.ok) throw new Error(`Failed to download attachment (HTTP ${res.status})`);
+    const arrayBuffer = await res.arrayBuffer();
+    const contentBuffer = Buffer.from(arrayBuffer);
 
     const result = await createOrOverwriteFile({ path, contentBuffer, message, branch, repoFull: repo, owner });
 
