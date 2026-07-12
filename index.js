@@ -1,6 +1,15 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, MessageFlags } = require('discord.js');
-const { createOrOverwriteFile, listDirectory, searchFiles, listRepos, searchRepos, getActiveRepo, setActiveRepo } = require('./github');
+const {
+  createOrOverwriteFile,
+  listDirectory,
+  searchFiles,
+  listRepos,
+  searchRepos,
+  suggestRepoNames,
+  getActiveRepo,
+  setActiveRepo,
+} = require('./github');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -49,6 +58,14 @@ function isAllowed(userId) {
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
 const MAX_TEXT_CHARS = 200_000;
 
+// Every command that takes owner:/repo: reads them the same way.
+function getOwnerRepoOptions(interaction) {
+  return {
+    owner: interaction.options.getString('owner') || undefined,
+    repo: interaction.options.getString('repo') || undefined,
+  };
+}
+
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
@@ -58,14 +75,32 @@ client.on('interactionCreate', async (interaction) => {
     try {
       const focused = interaction.options.getFocused(true); // { name, value }
       const typed = focused.value || '';
+      const commandName = interaction.commandName;
 
-      if (interaction.commandName === 'findfile') {
+      // repo: autocomplete — shared by pushfile, pushtext, browse, findfile, setrepo.
+      if (focused.name === 'repo') {
+        const owner = interaction.options.getString('owner') || undefined;
+        const suggestions = await suggestRepoNames({ owner, typed });
+        const choices = suggestions.map((r) => ({
+          name: `${r.private ? '🔒' : '📦'} ${r.fullName}`.slice(0, 100),
+          value: r.fullName.split('/')[1].slice(0, 100),
+        }));
+        await interaction.respond(choices);
+        return;
+      }
+
+      // path: autocomplete — shared by pushfile, pushtext, browse. Shows existing
+      // files/folders in the target repo that match what's typed so far, so you
+      // can browse into the right spot (or reuse an existing file to overwrite it)
+      // without knowing the exact path by heart.
+      if (focused.name === 'path') {
+        const owner = interaction.options.getString('owner') || undefined;
+        const repo = interaction.options.getString('repo') || undefined;
         if (!typed.trim()) {
           await interaction.respond([]);
           return;
         }
-        const repo = interaction.options.getString('repo') || undefined;
-        const { matches } = await searchFiles({ repoFull: repo, query: typed });
+        const { matches } = await searchFiles({ repoFull: repo, owner, query: typed });
         const choices = matches.slice(0, 25).map((m) => ({
           name: (m.type === 'dir' ? `📁 ${m.path}/` : `📄 ${m.path}`).slice(0, 100),
           value: m.path.slice(0, 100),
@@ -74,7 +109,24 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      if (interaction.commandName === 'searchrepo') {
+      // query: autocomplete for findfile (matches file/folder paths in the target repo).
+      if (commandName === 'findfile' && focused.name === 'query') {
+        if (!typed.trim()) {
+          await interaction.respond([]);
+          return;
+        }
+        const { owner, repo } = getOwnerRepoOptions(interaction);
+        const { matches } = await searchFiles({ repoFull: repo, owner, query: typed });
+        const choices = matches.slice(0, 25).map((m) => ({
+          name: (m.type === 'dir' ? `📁 ${m.path}/` : `📄 ${m.path}`).slice(0, 100),
+          value: m.path.slice(0, 100),
+        }));
+        await interaction.respond(choices);
+        return;
+      }
+
+      // query: autocomplete for searchrepo (matches repo names across GitHub).
+      if (commandName === 'searchrepo' && focused.name === 'query') {
         if (!typed.trim()) {
           await interaction.respond([]);
           return;
@@ -106,7 +158,8 @@ client.on('interactionCreate', async (interaction) => {
   if (!['pushfile', 'pushtext', 'browse', 'findfile', 'setrepo', 'listrepos', 'searchrepo'].includes(commandName)) return;
 
   // Only the write commands (including setrepo, since it changes where writes go)
-  // require the allowlist — browse/findfile are read-only and safe to expose more broadly.
+  // require the allowlist — browse/findfile/listrepos/searchrepo are read-only
+  // and safe to expose more broadly, since they can't change anything in the repo.
   const isWriteCommand = ['pushfile', 'pushtext', 'setrepo'].includes(commandName);
   if (isWriteCommand && !isAllowed(interaction.user.id)) {
     await interaction.reply({
@@ -134,7 +187,7 @@ client.on('interactionCreate', async (interaction) => {
         .map((r) => `${r.private ? '🔒' : '📦'} ${r.fullName}${r.description ? ` — ${r.description}` : ''}`);
 
       const extra = repos.length > 40 ? `\n…and ${repos.length - 40} more.` : '';
-      const header = `**Repos${owner ? ` for ${owner}` : ' for your token\'s account'}** (${repos.length}):`;
+      const header = `**Repos${owner ? ` for ${owner}` : " for your token's account"}** (${repos.length}):`;
 
       await interaction.editReply(`${header}\n\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}`);
     } catch (err) {
@@ -174,11 +227,11 @@ client.on('interactionCreate', async (interaction) => {
 
   if (commandName === 'browse') {
     try {
-      const repo = interaction.options.getString('repo') || undefined;
+      const { owner, repo } = getOwnerRepoOptions(interaction);
       const path = interaction.options.getString('path') || '';
       const branch = interaction.options.getString('branch') || undefined;
 
-      const entries = await listDirectory({ repoFull: repo, path, branch });
+      const entries = await listDirectory({ repoFull: repo, owner, path, branch });
 
       if (entries.length === 0) {
         await interaction.editReply(`📁 \`${path || '/'}\` is empty.`);
@@ -190,7 +243,8 @@ client.on('interactionCreate', async (interaction) => {
         .slice(0, 50)
         .map((e) => (e.type === 'dir' ? `📁 ${e.name}/` : `📄 ${e.name}  (${e.size} bytes)`));
 
-      const header = `**${repo || 'configured repo'}${branch ? ` @ ${branch}` : ''}** — \`${path || '/'}\``;
+      const repoLabel = repo ? (owner ? `${owner}/${repo}` : repo) : 'current active repo';
+      const header = `**${repoLabel}${branch ? ` @ ${branch}` : ''}** — \`${path || '/'}\``;
       const extra = entries.length > 50 ? `\n…and ${entries.length - 50} more.` : '';
 
       await interaction.editReply(`${header}\n\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}`);
@@ -205,17 +259,18 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'findfile') {
     try {
       const query = interaction.options.getString('query', true);
-      const repo = interaction.options.getString('repo') || undefined;
+      const { owner, repo } = getOwnerRepoOptions(interaction);
       const branch = interaction.options.getString('branch') || undefined;
 
-      const { matches, truncated, owner, repo: repoName, branch: usedBranch } = await searchFiles({
+      const { matches, truncated, owner: usedOwner, repo: usedRepo, branch: usedBranch } = await searchFiles({
         repoFull: repo,
+        owner,
         query,
         branch,
       });
 
       if (matches.length === 0) {
-        await interaction.editReply(`🔍 No files or folders matching \`${query}\` in **${owner}/${repoName}**.`);
+        await interaction.editReply(`🔍 No files or folders matching \`${query}\` in **${usedOwner}/${usedRepo}**.`);
         scheduleAutoDelete(interaction);
         return;
       }
@@ -228,7 +283,7 @@ client.on('interactionCreate', async (interaction) => {
       const truncNote = truncated ? '\n⚠️ Repo tree was truncated by GitHub (very large repo) — results may be incomplete.' : '';
 
       await interaction.editReply(
-        `**${owner}/${repoName}** @ ${usedBranch} — ${matches.length} match(es) for \`${query}\`:\n` +
+        `**${usedOwner}/${usedRepo}** @ ${usedBranch} — ${matches.length} match(es) for \`${query}\`:\n` +
           `\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}${truncNote}`
       );
     } catch (err) {
@@ -241,15 +296,27 @@ client.on('interactionCreate', async (interaction) => {
 
   if (commandName === 'setrepo') {
     try {
-      const repoFull = interaction.options.getString('repo', true).trim();
-      const parts = repoFull.replace(/^\/+|\/+$/g, '').split('/');
-      if (parts.length !== 2 || !parts[0] || !parts[1]) {
-        await interaction.editReply('❌ Repo must be in the form `owner/repo`, e.g. `jayjay/mod-mindustry`.');
+      const { owner, repo } = getOwnerRepoOptions(interaction);
+
+      let finalOwner = owner;
+      let finalRepo = repo;
+      if (repo && repo.includes('/')) {
+        const parts = repo.replace(/^\/+|\/+$/g, '').split('/');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) {
+          await interaction.editReply('❌ Repo must be `reponame` (with owner:), or `owner/repo` combined.');
+          scheduleAutoDelete(interaction);
+          return;
+        }
+        [finalOwner, finalRepo] = parts;
+      }
+
+      if (!finalOwner || !finalRepo) {
+        await interaction.editReply('❌ Provide both `owner:` and `repo:`, or `repo: owner/repo` combined.');
         scheduleAutoDelete(interaction);
         return;
       }
 
-      const updated = setActiveRepo(parts[0], parts[1]);
+      const updated = setActiveRepo(finalOwner, finalRepo);
       await interaction.editReply(
         `✅ Target repo switched to **${updated.owner}/${updated.repo}**\n` +
           `\`/pushfile\` and \`/pushtext\` will write here from now on — no restart needed, and this is remembered even if the bot restarts.`
@@ -263,7 +330,9 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
+  // pushfile / pushtext
   try {
+    const { owner, repo } = getOwnerRepoOptions(interaction);
     const path = interaction.options.getString('path', true);
     const message = interaction.options.getString('message') || undefined;
     const branch = interaction.options.getString('branch') || undefined;
@@ -293,16 +362,16 @@ client.on('interactionCreate', async (interaction) => {
       contentBuffer = Buffer.from(text, 'utf8');
     }
 
-    const result = await createOrOverwriteFile({ path, contentBuffer, message, branch });
+    const result = await createOrOverwriteFile({ path, contentBuffer, message, branch, repoFull: repo, owner });
 
     await interaction.editReply(
-      `✅ ${result.overwritten ? 'Overwrote' : 'Created'} \`${result.path}\`\n` +
+      `✅ ${result.overwritten ? 'Overwrote' : 'Created'} \`${result.path}\` in **${result.owner}/${result.repo}**\n` +
         `Commit: ${result.commitUrl}`
     );
 
     const actionWord = result.overwritten ? 'Overwrite' : 'Create';
     await logToChannel(
-      `✅ ${actionWord} was successful '${result.path}' — by <@${interaction.user.id}> — ${result.commitUrl}`
+      `✅ ${actionWord} was successful '${result.path}' in '${result.owner}/${result.repo}' — by <@${interaction.user.id}> — ${result.commitUrl}`
     );
   } catch (err) {
     console.error(err);
