@@ -61,8 +61,8 @@ function normalizePath(rawPath) {
  * Looks up the current file's SHA if it exists, so we can overwrite it.
  * Returns null if the file does not exist yet (so we create it fresh).
  */
-async function getExistingFileSha(path, branch) {
-  const { owner, repo } = getActiveRepo();
+async function getExistingFileSha(path, branch, ownerOverride, repoOverride) {
+  const { owner, repo } = ownerOverride && repoOverride ? { owner: ownerOverride, repo: repoOverride } : getActiveRepo();
   try {
     const res = await octokit.repos.getContent({
       owner,
@@ -83,13 +83,16 @@ async function getExistingFileSha(path, branch) {
 /**
  * Creates the file if it doesn't exist, or overwrites it if it does.
  * contentBuffer: Buffer of the raw file bytes.
+ * Pass `repoFull`/`owner` to target a repo for just this one call, without
+ * changing the persisted active repo (setActiveRepo). Omit both to use the
+ * current active repo.
  */
-async function createOrOverwriteFile({ path, contentBuffer, message, branch }) {
+async function createOrOverwriteFile({ path, contentBuffer, message, branch, repoFull, owner: ownerInput }) {
   const cleanPath = normalizePath(path);
   const targetBranch = branch || DEFAULT_BRANCH;
-  const { owner, repo } = getActiveRepo();
+  const { owner, repo } = resolveRepo(repoFull, ownerInput);
 
-  const existingSha = await getExistingFileSha(cleanPath, targetBranch);
+  const existingSha = await getExistingFileSha(cleanPath, targetBranch, owner, repo);
 
   const res = await octokit.repos.createOrUpdateFileContents({
     owner,
@@ -104,25 +107,57 @@ async function createOrOverwriteFile({ path, contentBuffer, message, branch }) {
   return {
     overwritten: Boolean(existingSha),
     path: cleanPath,
+    owner,
+    repo,
     commitUrl: res.data.commit.html_url,
     commitSha: res.data.commit.sha,
   };
 }
 
 /**
- * Splits "owner/repo" into parts. Falls back to the configured OWNER/REPO
- * if nothing (or an empty string) is passed, so existing commands keep working
- * without requiring the user to type the repo every time.
+ * Resolves the target owner/repo from separate `owner` and `repo` option values.
+ * Accepts either:
+ *   - repo = "owner/repo" (combined form, owner param ignored)
+ *   - repo = "reponame" + owner = "ownername" (split form)
+ *   - repo = "reponame" only (owner param omitted) -> uses the active repo's owner
+ *   - both omitted -> the current active repo entirely
  */
-function resolveRepo(repoFull) {
-  if (!repoFull || !repoFull.trim()) {
+function resolveRepo(repoInput, ownerInput) {
+  const repoTrimmed = (repoInput || '').trim();
+  const ownerTrimmed = (ownerInput || '').trim();
+
+  if (!repoTrimmed) {
     return getActiveRepo();
   }
-  const parts = repoFull.trim().replace(/^\/+|\/+$/g, '').split('/');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error('Repo must be in the form "owner/repo", e.g. "Anuken/Mindustry".');
+
+  if (repoTrimmed.includes('/')) {
+    const parts = repoTrimmed.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error('Repo must be in the form "owner/repo", e.g. "Anuken/Mindustry".');
+    }
+    return { owner: parts[0], repo: parts[1] };
   }
-  return { owner: parts[0], repo: parts[1] };
+
+  const owner = ownerTrimmed || getActiveRepo().owner;
+  if (!owner) {
+    throw new Error('An owner is required — either pass owner:, or use "owner/repo" in repo:.');
+  }
+  return { owner, repo: repoTrimmed };
+}
+
+/**
+ * Suggests repo names for autocomplete: lists repos under the given owner
+ * (or the active repo's owner if none typed yet) and filters by the partial
+ * text the user has typed so far.
+ */
+async function suggestRepoNames({ owner, typed }) {
+  const effectiveOwner = (owner && owner.trim()) || getActiveRepo().owner;
+  if (!effectiveOwner) return [];
+
+  const repos = await listRepos({ owner: effectiveOwner });
+  const q = (typed || '').trim().toLowerCase();
+  const filtered = q ? repos.filter((r) => r.fullName.split('/')[1].toLowerCase().includes(q)) : repos;
+  return filtered.slice(0, 25);
 }
 
 /**
@@ -130,8 +165,8 @@ function resolveRepo(repoFull) {
  * the configured GITHUB_TOKEN can read (public repos are readable regardless
  * of token scope; private repos need the token to actually have access).
  */
-async function listDirectory({ repoFull, path, branch }) {
-  const { owner, repo } = resolveRepo(repoFull);
+async function listDirectory({ repoFull, owner: ownerInput, path, branch }) {
+  const { owner, repo } = resolveRepo(repoFull, ownerInput);
   const cleanPath = path ? normalizePath(path) : '';
 
   const res = await octokit.repos.getContent({
@@ -156,8 +191,8 @@ async function listDirectory({ repoFull, path, branch }) {
  * matches folder names and doesn't require the code-search index to be built,
  * which makes it more reliable for smaller/newer repos.
  */
-async function searchFiles({ repoFull, query, branch }) {
-  const { owner, repo } = resolveRepo(repoFull);
+async function searchFiles({ repoFull, owner: ownerInput, query, branch }) {
+  const { owner, repo } = resolveRepo(repoFull, ownerInput);
   if (!query || !query.trim()) throw new Error('Search query cannot be empty.');
 
   const targetBranch = branch || DEFAULT_BRANCH;
@@ -242,6 +277,7 @@ module.exports = {
   searchFiles,
   listRepos,
   searchRepos,
+  suggestRepoNames,
   getActiveRepo,
   setActiveRepo,
   DEFAULT_BRANCH,
