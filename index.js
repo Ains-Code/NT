@@ -54,9 +54,72 @@ function isAllowed(userId) {
   return ALLOWED_USER_IDS.includes(userId);
 }
 
-// Basic safety limits
-const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
-const MAX_TEXT_CHARS = 200_000;
+// Basic safety limits.
+// MAX_FILE_BYTES is set to GitHub's own hard ceiling for the Contents API
+// (createOrUpdateFileContents) — GitHub enforces 100 MB per file and rejects
+// anything larger, so this isn't an arbitrary app-side cap anymore, it's the
+// real maximum. (Discord's own attachment size limit — 25MB by default, more
+// with server boosts — still applies on the upload side; that's outside
+// this bot's control.)
+const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB — GitHub's hard limit
+
+// There is no MAX_TEXT_CHARS for pushtext's `content:` option anymore — the
+// old 200,000-char app-level cap was dead code anyway, since Discord itself
+// hard-limits a slash command STRING option to 6,000 characters before it
+// ever reaches this bot. That 6,000-char ceiling is a Discord platform limit
+// and can't be raised from here. For anything longer, use /pushfile instead
+// (attach a .txt/.md/etc. file) — it now goes all the way up to GitHub's
+// 100 MB limit above.
+const DISCORD_MSG_LIMIT = 2000; // Discord's hard limit on a single message's content
+
+/**
+ * Sends a (potentially long) list of lines to Discord without silently
+ * truncating results. Instead of capping at a fixed count:
+ *  - Small result sets are sent as one message.
+ *  - Medium result sets are paginated across multiple follow-up messages,
+ *    each packed to fit Discord's 2000-char message limit.
+ *  - Very large result sets are sent as a downloadable .txt attachment
+ *    instead of dozens of chat messages.
+ */
+async function sendListReply(interaction, header, lines, { asFileThreshold = 300 } = {}) {
+  if (lines.length === 0) {
+    await interaction.editReply(header);
+    return;
+  }
+
+  if (lines.length > asFileThreshold) {
+    const buffer = Buffer.from(lines.join('\n'), 'utf8');
+    await interaction.editReply({
+      content: `${header}\n📎 ${lines.length} results — attached as a file (too many to paginate cleanly in chat).`,
+      files: [{ attachment: buffer, name: 'results.txt' }],
+    });
+    return;
+  }
+
+  const codeBlockOverhead = 8; // "```\n" + "\n```"
+  const budget = DISCORD_MSG_LIMIT - codeBlockOverhead;
+
+  const chunks = [];
+  let current = [];
+  let currentLen = 0;
+  for (const line of lines) {
+    const lineLen = line.length + 1; // + newline
+    if (current.length && currentLen + lineLen > budget) {
+      chunks.push(current);
+      current = [];
+      currentLen = 0;
+    }
+    current.push(line);
+    currentLen += lineLen;
+  }
+  if (current.length) chunks.push(current);
+
+  const pageSuffix = chunks.length > 1 ? ` (page 1/${chunks.length})` : '';
+  await interaction.editReply(`${header}${pageSuffix}\n\`\`\`\n${chunks[0].join('\n')}\n\`\`\``);
+  for (let i = 1; i < chunks.length; i++) {
+    await interaction.followUp(`(page ${i + 1}/${chunks.length})\n\`\`\`\n${chunks[i].join('\n')}\n\`\`\``);
+  }
+}
 
 // Every command that takes owner:/repo: reads them the same way.
 function getOwnerRepoOptions(interaction) {
@@ -182,14 +245,10 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const lines = repos
-        .slice(0, 40)
-        .map((r) => `${r.private ? '🔒' : '📦'} ${r.fullName}${r.description ? ` — ${r.description}` : ''}`);
-
-      const extra = repos.length > 40 ? `\n…and ${repos.length - 40} more.` : '';
+      const lines = repos.map((r) => `${r.private ? '🔒' : '📦'} ${r.fullName}${r.description ? ` — ${r.description}` : ''}`);
       const header = `**Repos${owner ? ` for ${owner}` : " for your token's account"}** (${repos.length}):`;
 
-      await interaction.editReply(`${header}\n\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}`);
+      await sendListReply(interaction, header, lines);
     } catch (err) {
       console.error(err);
       await interaction.editReply(`❌ Failed: ${err?.message || 'Unknown error'}`);
@@ -210,13 +269,10 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const lines = repos
-        .slice(0, 25)
-        .map((r) => `${r.private ? '🔒' : '📦'} ${r.fullName} ⭐${r.stars}${r.description ? ` — ${r.description}` : ''}`);
+      const lines = repos.map((r) => `${r.private ? '🔒' : '📦'} ${r.fullName} ⭐${r.stars}${r.description ? ` — ${r.description}` : ''}`);
+      const header = `🔍 ${repos.length} repo(s) matching \`${query}\`:`;
 
-      await interaction.editReply(
-        `🔍 ${repos.length} repo(s) matching \`${query}\`:\n\`\`\`\n${lines.join('\n')}\n\`\`\``
-      );
+      await sendListReply(interaction, header, lines);
     } catch (err) {
       console.error(err);
       await interaction.editReply(`❌ Failed: ${err?.message || 'Unknown error'}`);
@@ -239,15 +295,11 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const lines = entries
-        .slice(0, 50)
-        .map((e) => (e.type === 'dir' ? `📁 ${e.name}/` : `📄 ${e.name}  (${e.size} bytes)`));
-
+      const lines = entries.map((e) => (e.type === 'dir' ? `📁 ${e.name}/` : `📄 ${e.name}  (${e.size} bytes)`));
       const repoLabel = repo ? (owner ? `${owner}/${repo}` : repo) : 'current active repo';
-      const header = `**${repoLabel}${branch ? ` @ ${branch}` : ''}** — \`${path || '/'}\``;
-      const extra = entries.length > 50 ? `\n…and ${entries.length - 50} more.` : '';
+      const header = `**${repoLabel}${branch ? ` @ ${branch}` : ''}** — \`${path || '/'}\` (${entries.length}):`;
 
-      await interaction.editReply(`${header}\n\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}`);
+      await sendListReply(interaction, header, lines);
     } catch (err) {
       console.error(err);
       await interaction.editReply(`❌ Failed: ${err?.message || 'Unknown error'}`);
@@ -275,17 +327,11 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const lines = matches
-        .slice(0, 50)
-        .map((m) => (m.type === 'dir' ? `📁 ${m.path}/` : `📄 ${m.path}`));
-
-      const extra = matches.length > 50 ? `\n…and ${matches.length - 50} more matches.` : '';
+      const lines = matches.map((m) => (m.type === 'dir' ? `📁 ${m.path}/` : `📄 ${m.path}`));
       const truncNote = truncated ? '\n⚠️ Repo tree was truncated by GitHub (very large repo) — results may be incomplete.' : '';
+      const header = `**${usedOwner}/${usedRepo}** @ ${usedBranch} — ${matches.length} match(es) for \`${query}\`:${truncNote}`;
 
-      await interaction.editReply(
-        `**${usedOwner}/${usedRepo}** @ ${usedBranch} — ${matches.length} match(es) for \`${query}\`:\n` +
-          `\`\`\`\n${lines.join('\n')}\n\`\`\`${extra}${truncNote}`
-      );
+      await sendListReply(interaction, header, lines);
     } catch (err) {
       console.error(err);
       await interaction.editReply(`❌ Failed: ${err?.message || 'Unknown error'}`);
@@ -343,7 +389,9 @@ client.on('interactionCreate', async (interaction) => {
       const attachment = interaction.options.getAttachment('file', true);
 
       if (attachment.size > MAX_FILE_BYTES) {
-        await interaction.editReply(`❌ File is too large (${attachment.size} bytes). Limit is ${MAX_FILE_BYTES} bytes.`);
+        await interaction.editReply(
+          `❌ File is too large (${attachment.size} bytes). Limit is ${MAX_FILE_BYTES} bytes (100 MB) — this is GitHub's own hard cap, not something this bot can raise further.`
+        );
         scheduleAutoDelete(interaction);
         return;
       }
@@ -353,12 +401,11 @@ client.on('interactionCreate', async (interaction) => {
       const arrayBuffer = await res.arrayBuffer();
       contentBuffer = Buffer.from(arrayBuffer);
     } else {
+      // No app-level length check needed here: Discord itself caps a STRING
+      // option at 6,000 characters before the bot ever sees it. If you need
+      // more than that, use /pushfile with a text file attached instead —
+      // that path supports content up to GitHub's 100 MB limit.
       const text = interaction.options.getString('content', true);
-      if (text.length > MAX_TEXT_CHARS) {
-        await interaction.editReply(`❌ Content is too long (${text.length} chars). Limit is ${MAX_TEXT_CHARS}.`);
-        scheduleAutoDelete(interaction);
-        return;
-      }
       contentBuffer = Buffer.from(text, 'utf8');
     }
 
